@@ -304,7 +304,7 @@ fn pack_postcodes(
     maxll: Point,
 ) -> Result<Vec<DeltaPacked>, PostcodeError> {
     let mut packed_codes = Vec::new();
-    let mut processed: Vec<ProcessedPostcode> = postcodes
+    let processed: Vec<ProcessedPostcode> = postcodes
         .iter()
         .filter_map(|x| process(x, minll, maxll).ok())
         .collect();
@@ -326,6 +326,7 @@ fn pack_postcodes(
             // a prefix block as the first step, so it will still have the
             // initial state at this point.
             lp = null_pcd;
+            last_point = 0;
             lp.prefix = p.prefix;
         }
         while i + 1 < processed.len()
@@ -351,22 +352,18 @@ fn pack_postcodes(
         } as i32;
         let mut offset = 0;
         let dist = max_point as i32 - last_point as i32;
-        let (can_delta_encode_pc, pcdelta) = {
-            if dist <= 0 {
-                // List is probably not sorted, inefficient
-                (false, 0)
-            } else {
-                if dist < 64 {
-                    (true, dist)
-                } else if (max_point - dist % 64) >= p.code_number as i32 && dist / 64 <= 64 {
-                    offset = dist % 64;
-
-                    (true, (dist / 64 - 1) | 0x40)
-                } else {
-                    (false, 0)
-                }
-            }
+        let (can_delta_encode_pc, pcdelta) = if dist <= 0 {
+            // List is probably not sorted, inefficient
+            (false, 0)
+        } else if dist < 64 {
+            (true, dist)
+        } else if (max_point - dist % 64) >= p.code_number as i32 && dist / 64 <= 64 {
+            offset = dist % 64;
+            (true, (dist / 64 - 1) | 0x40)
+        } else {
+            (false, 0)
         };
+
         let c = max_point.to_le_bytes();
         let pcdelta = (pcdelta as u8).to_le_bytes()[0];
         match (can_delta_encode_pc, can_delta_encode_ll) {
