@@ -245,34 +245,34 @@ fn calc_ll(minll: Point, maxll: Point, ll: Point) -> (u16, u16) {
     (long, lat)
 }
 
-enum DeltaPacked {
-    Absolute([u8; 8]),
-    DeltaP([u8; 5]),
-    DeltaLL([u8; 6]),
-    DeltaPLL([u8; 3]),
-}
+// enum DeltaPacked {
+//     Absolute([u8; 8]),
+//     DeltaP([u8; 5]),
+//     DeltaLL([u8; 6]),
+//     DeltaPLL([u8; 3]),
+// }
 
-impl DeltaPacked {
-    fn write_to_file<W: Write>(&self, mut f: W) -> std::io::Result<usize> {
-        use DeltaPacked::*;
-        match self {
-            Absolute(a) => f.write(a),
-            DeltaP(a) => f.write(a),
-            DeltaLL(a) => f.write(a),
-            DeltaPLL(a) => f.write(a),
-        }
-    }
+// impl DeltaPacked {
+//     fn write_to_file<W: Write>(&self, mut f: W) -> std::io::Result<usize> {
+//         use DeltaPacked::*;
+//         match self {
+//             Absolute(a) => f.write(a),
+//             DeltaP(a) => f.write(a),
+//             DeltaLL(a) => f.write(a),
+//             DeltaPLL(a) => f.write(a),
+//         }
+//     }
 
-    fn len(&self) -> usize {
-        use DeltaPacked::*;
-        match self {
-            Absolute(_) => 8,
-            DeltaP(_) => 5,
-            DeltaLL(_) => 6,
-            DeltaPLL(_) => 3,
-        }
-    }
-}
+//     fn len(&self) -> usize {
+//         use DeltaPacked::*;
+//         match self {
+//             Absolute(_) => 8,
+//             DeltaP(_) => 5,
+//             DeltaLL(_) => 6,
+//             DeltaPLL(_) => 3,
+//         }
+//     }
+// }
 
 #[derive(Clone, Copy)]
 struct ProcessedPostcode {
@@ -476,15 +476,15 @@ fn do_postcode_repack(
     Header, 16 bytes:
 
         magic:   4 bytes "UKPP" - magic number for "UK Postcode Pack"
-        version: 4 bytes (u32)  - version number of the file format (this code generates version 1)
+        version: 4 bytes (u32)  - version number of the file format (this code generates version 0x100)
         date:    8 bytes (u64)  - a unix epoch that represents the release date of the ONS dataset that the file was generated from
 
-    Boudning box extents, 4*8 = 32 bytes:
+    Boudning box extents, 4*4 = 16 bytes:
 
-        minlong: 8 bytes (f64)
-        maxlong: 8 bytes (f64)
-        minlat:  8 bytes (f64)
-        maxlat:  8 bytes (f64)
+        minlong: 4 bytes (f32)
+        maxlong: 4 bytes (f32)
+        minlat:  4 bytes (f32)
+        maxlat:  4 bytes (f32)
 
     Quick lookup table, 26*36*4 = 3744 bytes:
 
@@ -495,12 +495,15 @@ fn do_postcode_repack(
     Postcode data, variable length (3 to 8 bytes per postcode):
 
         list of postcodes:
-            format:   1 bytes (bitfield)
-                postcode_is_delta: 1 bit (flag indicating if postcode is delta-encoded)
-                latlong_is_delta:  1 bit (flag indicating if lat/long is delta-encoded)
-                postcode_delta:    6 bits (u6 number to add to previous postcode to calculate this postcode, or unused if not postcode_is_delta)
-            postcode: 0 or 3 bytes (custom encoding, present only if not postcode_is_delta)
-            longlat:  2 or 4 bytes (2 x i8 if latlong_is_delta, or 2 x u16 otherwise)
+            format:   2 bits
+                00: u16 lat/long
+                01: i4 delta lat/long
+                10: i8 delta lat/long
+                11: i5 delta lat/long
+            lattop: 0 or 2 bits (present only if format is i5 delta, 2 MSB of latitude)
+            postcode_delta: 4 or 6 bits (4 if format is i5 delta)
+            postcode: 0 or 3 bytes (custom encoding, present only if postcode_delta == 0)
+            lat/long:  1, 2, or 4 bytes (3 LSB of i5 lat, i5 long, 2 x i4, 2 x i8, or 2 x u16)
 
     */
 
@@ -508,7 +511,7 @@ fn do_postcode_repack(
     outfile.write(b"UKPP")?; // magic number is 1347439445
 
     // version 1 of file format
-    const version: u32 = 1;
+    const version: u32 = 0x100;
     outfile.write(&version.to_le_bytes())?;
 
     // data update date
