@@ -69,6 +69,22 @@ pub fn pack_code(code: &str) -> Result<[u8; 3], PostcodeError> {
 
     let mut chars = code.as_bytes().iter();
 
+    fn encode_unit(x: u8) -> Result<u32, PostcodeError> {
+        let mut x = x;
+        if x >= b'A' && x <= b'Z' {
+            for char in b"VOMKIC" {
+                if x == *char {
+                    return Err(PostcodeError::InvalidFormat());
+                } else if x > *char {
+                    x -= 1;
+                }
+            }
+            Ok((x - b'A') as u32)
+        } else {
+            Err(PostcodeError::InvalidFormat())
+        }
+    }
+
     fn encode_AZ(x: u8) -> Result<u32, PostcodeError> {
         if x >= b'A' && x <= b'Z' {
             Ok((x - b'A') as u32)
@@ -102,12 +118,12 @@ pub fn pack_code(code: &str) -> Result<[u8; 3], PostcodeError> {
     let _b = encode_AZ09(*chars.next().unwrap())?;
 
     // Encode the rest
-    let c = 26 * 26 * 10 * 37 * encode_AZ09_space(*chars.next().unwrap())?;
-    let d = 26 * 26 * 10 * encode_AZ09_space(*chars.next().unwrap())?;
+    let c = 20 * 20 * 10 * 37 * encode_AZ09_space(*chars.next().unwrap())?;
+    let d = 20 * 20 * 10 * encode_AZ09_space(*chars.next().unwrap())?;
 
-    let e = 26 * 26 * encode_09(*chars.next().unwrap())?;
-    let f = 26 * encode_AZ(*chars.next().unwrap())?;
-    let g = encode_AZ(*chars.next().unwrap())?;
+    let e = 20 * 20 * encode_09(*chars.next().unwrap())?;
+    let f = 20 * encode_unit(*chars.next().unwrap())?;
+    let g = encode_unit(*chars.next().unwrap())?;
     let encoded = c + d + e + f + g;
     assert!(encoded < 2_u32.pow(24));
     let encoded = encoded.to_le_bytes();
@@ -320,6 +336,7 @@ fn pack_postcodes(
     // let mut dist_count = vec![0; 16];
     let mut lp = null_pcd;
     let mut last_point = 0;
+    let mut run_index = -1;
     let mut i = 1;
     while i < processed.len() {
         let mut p = processed[i];
@@ -382,31 +399,44 @@ fn pack_postcodes(
         } else {
             (false, 0, max_point)
         };
-        let can_delta_mixed_half_encode = {
-            let can_long = dlong >= -16 && dlong <= 15;
-            let can_lat = dlat >= -16 && dlat <= 15;
-            let can_pc = dist < 16 || !can_delta_encode_pc;
-            can_long && can_lat && can_pc
-        };
+        // let can_delta_mixed_half_encode = {
+        //     let can_long = dlong >= -16 && dlong <= 15;
+        //     let can_lat = dlat >= -16 && dlat <= 15;
+        //     let can_pc = dist < 16 || !can_delta_encode_pc;
+        //     can_long && can_lat && can_pc
+        // };
 
         let c = max_point.to_le_bytes();
         let pcdelta = (pcdelta as u8).to_le_bytes()[0];
         let mut packed_entry: Vec<u8> = Vec::new();
-        if can_delta_encode_pc {
+        if pcdelta == 1 && can_delta_encode_ll {
+            if run_index < 0 || packed_codes[run_index as usize] >= 0xFE {
+                run_index = packed_codes.len() as i32;
+                packed_entry.push(0xC0);
+                // println!("begin")
+            } else {
+                packed_codes[run_index as usize] += 1;
+                // println!("continue")
+            }
+        } else if can_delta_encode_pc {
             packed_entry.push(pcdelta);
         } else {
-            packed_entry.push(0x00);
+            packed_entry.push(if can_delta_half_encode_ll {
+                0x40
+            } else if can_delta_encode_ll {
+                0x80
+            } else {
+                0x00
+            });
             packed_entry.extend(c);
         }
 
-        if can_delta_half_encode_ll {
-            packed_entry[0] |= 0x40;
+        if can_delta_half_encode_ll && run_index < 0 {
             packed_entry.push((dlat & 0xF << 4 | dlong & 0xF) as u8)
-        } else if can_delta_mixed_half_encode {
-            packed_entry[0] |= 0xC0 | (dlat & 0x18 << 1) as u8;
-            packed_entry.push((dlat & 0x7 << 5 | dlong & 0x1F) as u8)
+        // } else if can_delta_mixed_half_encode {
+        //     packed_entry[0] |= 0xC0 | (dlat & 0x18 << 1) as u8;
+        //     packed_entry.push((dlat & 0x7 << 5 | dlong & 0x1F) as u8)
         } else if can_delta_encode_ll {
-            packed_entry[0] |= 0x80;
             packed_entry.extend([dlat.to_le_bytes()[0], dlong.to_le_bytes()[0]])
         } else {
             packed_entry.extend(ll)
