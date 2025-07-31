@@ -358,7 +358,9 @@ fn pack_postcodes(
             (true, dist, max_point)
         } else if (max_point - dist % 64) >= p.code_number as i32 && dist / 64 <= 64 {
             (true, (dist / 64 - 1) | 0x40, max_point - dist % 64)
-        } else if last_point + 64 * 64 >= p.code_number as i32 {
+        } else if last_point + 64 * 64 >= p.code_number as i32
+            && max_point + 1 > last_point + 64 * 64
+        {
             (true, 0x7F, last_point + 64 * 64)
         } else {
             (false, 0, max_point)
