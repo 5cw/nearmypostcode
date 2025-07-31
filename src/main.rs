@@ -420,6 +420,7 @@ fn pack_postcodes(
             }
         } else if can_delta_encode_pc {
             packed_entry.push(pcdelta);
+            run_index = -1;
         } else {
             packed_entry.push(if can_delta_half_encode_ll {
                 0x40
@@ -429,6 +430,7 @@ fn pack_postcodes(
                 0x00
             });
             packed_entry.extend(c);
+            run_index = -1;
         }
 
         if can_delta_half_encode_ll && run_index < 0 {
