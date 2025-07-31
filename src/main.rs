@@ -350,18 +350,18 @@ fn pack_postcodes(
             Some(nxt) => nxt.code_number - 1,
             None => p.code_number,
         } as i32;
-        let mut offset = 0;
         let dist = max_point as i32 - last_point as i32;
-        let (can_delta_encode_pc, pcdelta) = if dist <= 0 {
+        let (can_delta_encode_pc, pcdelta, point) = if dist <= 0 {
             // List is probably not sorted, inefficient
-            (false, 0)
+            (false, 0, max_point)
         } else if dist < 64 {
-            (true, dist)
+            (true, dist, max_point)
         } else if (max_point - dist % 64) >= p.code_number as i32 && dist / 64 <= 64 {
-            offset = dist % 64;
-            (true, (dist / 64 - 1) | 0x40)
+            (true, (dist / 64 - 1) | 0x40, max_point - dist % 64)
+        } else if last_point + 64 * 64 >= p.code_number as i32 {
+            (true, 0x7F, last_point + 64 * 64)
         } else {
-            (false, 0)
+            (false, 0, max_point)
         };
 
         let c = max_point.to_le_bytes();
@@ -408,7 +408,7 @@ fn pack_postcodes(
         }
         lp = p;
         i += 1;
-        last_point = max_point - offset;
+        last_point = point;
     }
     Ok(packed_codes)
 }
