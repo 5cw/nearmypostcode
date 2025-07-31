@@ -302,11 +302,13 @@ fn pack_postcodes(
     postcodes: &Vec<PostcodeInfo>,
     minll: Point,
     maxll: Point,
-) -> Result<Vec<DeltaPacked>, PostcodeError> {
+) -> Result<(Vec<u8>, HashMap<String, u32>), PostcodeError> {
     let mut packed_codes = Vec::new();
+
+    let mut lut: HashMap<String, u32> = HashMap::new();
     let processed: Vec<ProcessedPostcode> = postcodes
         .iter()
-        .filter_map(|x| process(x, minll, maxll).ok())
+        .map(|x| process(x, minll, maxll).unwrap())
         .collect();
 
     let null_pcd = ProcessedPostcode {
@@ -315,6 +317,7 @@ fn pack_postcodes(
         code_number: 0,
         prefix: [0, 0],
     };
+    // let mut dist_count = vec![0; 16];
     let mut lp = null_pcd;
     let mut last_point = 0;
     let mut i = 1;
@@ -328,6 +331,10 @@ fn pack_postcodes(
             lp = null_pcd;
             last_point = 0;
             lp.prefix = p.prefix;
+            lut.insert(
+                String::from_utf8(p.prefix.to_vec()).unwrap(),
+                packed_codes.len() as u32,
+            );
         }
         while i + 1 < processed.len()
             && p.lat == processed[i + 1].lat
@@ -343,6 +350,11 @@ fn pack_postcodes(
             let can_lat = dlat >= -128 && dlat <= 127;
             can_long && can_lat
         };
+        let can_delta_half_encode_ll = {
+            let can_long = dlong >= -8 && dlong <= 7;
+            let can_lat = dlat >= -8 && dlat <= 7;
+            can_long && can_lat
+        };
         let latb = p.lat.to_le_bytes();
         let longb = p.long.to_le_bytes();
         let ll = [latb[0], latb[1], longb[0], longb[1]];
@@ -351,68 +363,62 @@ fn pack_postcodes(
             None => p.code_number,
         } as i32;
         let dist = max_point as i32 - last_point as i32;
+        // for power in 0..16 {
+        //     if dlong.abs() >> power > 0 && dlat.abs() >> power > 0 {
+        //         dist_count[power] += 1;
+        //     }
+        // }
         let (can_delta_encode_pc, pcdelta, point) = if dist <= 0 {
             // List is probably not sorted, inefficient
             (false, 0, max_point)
         } else if dist < 64 {
             (true, dist, max_point)
-        } else if (max_point - dist % 64) >= p.code_number as i32 && dist / 64 <= 64 {
-            (true, (dist / 64 - 1) | 0x40, max_point - dist % 64)
-        } else if last_point + 64 * 64 >= p.code_number as i32
-            && max_point + 1 > last_point + 64 * 64
-        {
-            (true, 0x7F, last_point + 64 * 64)
+        // } else if (max_point - dist % 64) >= p.code_number as i32 && dist / 64 <= 64 {
+        //     (true, (dist / 64 - 1) | 0x40, max_point - dist % 64)
+        // } else if last_point + 64 * 64 >= p.code_number as i32
+        //     && max_point + 1 > last_point + 64 * 64
+        // {
+        //     (true, 0x7F, last_point + 64 * 64)
         } else {
             (false, 0, max_point)
+        };
+        let can_delta_mixed_half_encode = {
+            let can_long = dlong >= -16 && dlong <= 15;
+            let can_lat = dlat >= -16 && dlat <= 15;
+            let can_pc = dist < 16 || !can_delta_encode_pc;
+            can_long && can_lat && can_pc
         };
 
         let c = max_point.to_le_bytes();
         let pcdelta = (pcdelta as u8).to_le_bytes()[0];
-        match (can_delta_encode_pc, can_delta_encode_ll) {
-            (false, false) => {
-                let mut packed: [u8; 8] = [0; 8];
-                packed[0] = 0x00;
-                packed[1] = c[0];
-                packed[2] = c[1];
-                packed[3] = c[2];
-                packed[4] = ll[0];
-                packed[5] = ll[1];
-                packed[6] = ll[2];
-                packed[7] = ll[3];
-                packed_codes.push(DeltaPacked::Absolute(packed));
-            }
-            (true, false) => {
-                let mut packed: [u8; 5] = [0; 5];
-                packed[0] = pcdelta;
-                packed[1] = ll[0];
-                packed[2] = ll[1];
-                packed[3] = ll[2];
-                packed[4] = ll[3];
-                packed_codes.push(DeltaPacked::DeltaP(packed));
-            }
-            (false, true) => {
-                let mut packed: [u8; 6] = [0; 6];
-                packed[0] = 0x80;
-                packed[1] = c[0];
-                packed[2] = c[1];
-                packed[3] = c[2];
-                packed[4] = dlat.to_le_bytes()[0];
-                packed[5] = dlong.to_le_bytes()[0];
-                packed_codes.push(DeltaPacked::DeltaLL(packed));
-            }
-            (true, true) => {
-                let mut packed: [u8; 3] = [0; 3];
-                packed[0] = 0x80 + pcdelta;
-                packed[1] = dlat.to_le_bytes()[0];
-                packed[2] = dlong.to_le_bytes()[0];
-                packed_codes.push(DeltaPacked::DeltaPLL(packed));
-            }
+        let mut packed_entry: Vec<u8> = Vec::new();
+        if can_delta_encode_pc {
+            packed_entry.push(pcdelta);
+        } else {
+            packed_entry.push(0x00);
+            packed_entry.extend(c);
         }
+
+        if can_delta_half_encode_ll {
+            packed_entry[0] |= 0x40;
+            packed_entry.push((dlat & 0xF << 4 | dlong & 0xF) as u8)
+        } else if can_delta_mixed_half_encode {
+            packed_entry[0] |= 0xC0 | (dlat & 0x18 << 1) as u8;
+            packed_entry.push((dlat & 0x7 << 5 | dlong & 0x1F) as u8)
+        } else if can_delta_encode_ll {
+            packed_entry[0] |= 0x80;
+            packed_entry.extend([dlat.to_le_bytes()[0], dlong.to_le_bytes()[0]])
+        } else {
+            packed_entry.extend(ll)
+        }
+
+        packed_codes.extend(packed_entry);
         lp = p;
         i += 1;
         last_point = point;
     }
-    Ok(packed_codes)
+    // println!("{:?}", dist_count);
+    Ok((packed_codes, lut))
 }
 
 fn human(n: u64) -> String {
@@ -455,7 +461,7 @@ fn do_postcode_repack(
     println!("Sorting postcode lists...");
     postcodes.sort_by(|a, b| a.postcode.cmp(&b.postcode));
     println!("Packing postcodes...");
-    let packed_codes = pack_postcodes(&postcodes, minll, maxll)?;
+    let (packed_codes, mut lut) = pack_postcodes(&postcodes, minll, maxll)?;
     let mut outfile = OpenOptions::new()
         .write(true)
         .create(true)
@@ -518,22 +524,8 @@ fn do_postcode_repack(
     outfile.write(&minlat.to_le_bytes())?;
     outfile.write(&maxlat.to_le_bytes())?;
 
-    let mut lut: HashMap<String, u32> = HashMap::new();
-
-    // Build and write the table
-    let mut last_prefix = String::new();
-    let mut pos = 0;
-    for (postcode, packed_code) in postcodes.iter().zip(&packed_codes) {
-        let this_prefix = postcode.postcode[0..2].to_string();
-        if this_prefix != last_prefix {
-            lut.insert(this_prefix.clone(), pos as u32);
-            last_prefix = this_prefix;
-        }
-        pos += packed_code.len();
-    }
-
     // Build the table in reverse to be able to calculate the offsets
-    let mut lastpos = pos as u32;
+    let mut lastpos = packed_codes.len() as u32;
     for c1 in (0..26).rev() {
         let s1 = b'A' + c1;
         for c2 in (0..36).rev() {
@@ -560,10 +552,7 @@ fn do_postcode_repack(
 
     // One extra element after end, total bytes
     outfile.write(&lastpos.to_le_bytes())?;
-    for p in packed_codes.iter() {
-        p.write_to_file(&outfile)?;
-    }
-
+    outfile.write(&packed_codes)?;
     if let Ok(l) = outfile.stream_position() {
         println!("  Total file size: {}", human(l));
     } else {
